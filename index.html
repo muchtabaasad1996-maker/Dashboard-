@@ -647,7 +647,26 @@
             }
         }
 
-        function exportToWord() {
+        // Helper function to maintain image aspect ratio in Word
+        function getImageDimensions(dataUrl) {
+            return new Promise(resolve => {
+                const img = new Image();
+                img.onload = () => {
+                    let w = img.width;
+                    let h = img.height;
+                    const maxW = 350; // Fit nicely on Word A4 page
+                    if (w > maxW) {
+                        h = Math.round((h * maxW) / w);
+                        w = maxW;
+                    }
+                    resolve({ width: w || 300, height: h || 300 });
+                };
+                img.onerror = () => resolve({ width: 300, height: 300 });
+                img.src = dataUrl;
+            });
+        }
+
+        async function exportToWord() {
             if (patients.length === 0) {
                 showToast('No patient records available to export.');
                 return;
@@ -664,7 +683,9 @@
                 new docx.Paragraph({ text: `Total Active Cases: ${patients.length}`, spacing: { after: 300 } }),
             ];
 
-            patients.forEach((p, index) => {
+            for (let index = 0; index < patients.length; index++) {
+                const p = patients[index];
+                
                 children.push(new docx.Paragraph({ 
                     text: `Case #${index + 1}: ${p.name} (${p.gender}, ${p.age} y/o)`, 
                     heading: docx.HeadingLevel.HEADING_2,
@@ -693,15 +714,55 @@
                 addLine("Management Plan", p.plan || 'N/A');
                 
                 let attachCount = 0;
-                if (p.images && p.images.length > 0) attachCount = p.images.length;
-                else if (p.imageData) attachCount = 1;
+                let imagesToExport = [];
+                if (p.images && p.images.length > 0) {
+                    attachCount = p.images.length;
+                    imagesToExport = p.images;
+                } else if (p.imageData) {
+                    attachCount = 1;
+                    imagesToExport = [p.imageData];
+                }
 
                 if (attachCount > 0) {
-                    addLine("Attachments", `${attachCount} image(s) attached (view in digital app)`);
+                    addLine("Attachments", `${attachCount} image(s) attached below:`);
+                    
+                    for (let imgBase64 of imagesToExport) {
+                        try {
+                            // Calculate proper dimensions and mime type for Word
+                            const dims = await getImageDimensions(imgBase64);
+                            const mimeType = imgBase64.startsWith('data:image/png') ? 'png' : 'jpg';
+                            
+                            // Convert Base64 data URL to ArrayBuffer for docx.js
+                            const base64Data = imgBase64.split(',')[1];
+                            const binaryString = window.atob(base64Data);
+                            const len = binaryString.length;
+                            const bytes = new Uint8Array(len);
+                            for (let i = 0; i < len; i++) {
+                                bytes[i] = binaryString.charCodeAt(i);
+                            }
+                            
+                            // Add image perfectly packaged in its own isolated paragraph
+                            children.push(new docx.Paragraph({
+                                children: [
+                                    new docx.ImageRun({
+                                        data: bytes.buffer, // Using standard ArrayBuffer
+                                        transformation: {
+                                            width: dims.width,
+                                            height: dims.height
+                                        },
+                                        type: mimeType
+                                    })
+                                ],
+                                spacing: { before: 150, after: 150 }
+                            }));
+                        } catch (err) {
+                            console.error("Error processing image for export:", err);
+                        }
+                    }
                 }
                 
                 children.push(new docx.Paragraph({ text: "" })); // Empty line between cases
-            });
+            }
 
             // Assemble the document
             const doc = new docx.Document({
